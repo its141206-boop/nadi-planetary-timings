@@ -1,11 +1,7 @@
-# 1. Install dependencies completely silently
-#!pip install -q pyswisseph geopy
-
+import streamlit as st
 import swisseph as swe
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from geopy.geocoders import Nominatim
-import ipywidgets as widgets
-from IPython.display import display, HTML
 
 # --- Core Data Structures & Settings ---
 swe.set_ephe_path(None)
@@ -36,162 +32,126 @@ PLANETARY_TIMING_YEARS = {
 
 CYCLE_ORDER = ["Jupiter", "Sun", "Moon", "Venus", "Mars", "Mercury", "Saturn", "Rahu", "Ketu"]
 
-# --- Core Computation Logic ---
+# --- Core Computation Engine ---
 def execute_calculation(date_val, time_val, place_val, offset_val):
+    # Fallback coordinates if geopy hits a rate limit or timeout on public cloud hosts
+    resolved_address = "New Delhi (Default Fallback)"
     try:
-        # Fallback coordinate handler if geopy geo-lookup times out
-        lat, lon, resolved_address = 28.6139, 77.2090, "New Delhi (Fallback Default)"
-        try:
-            geolocator = Nominatim(user_agent="colab_nadi_notebook")
-            location = geolocator.geocode(place_val, timeout=4)
-            if location:
-                resolved_address = location.address
-        except:
-            pass # Use local fallback gracefully if structural firewall blocks the network
+        geolocator = Nominatim(user_agent="streamlit_nadi_calculator")
+        location = geolocator.geocode(place_val, timeout=5)
+        if location:
+            resolved_address = location.address
+    except:
+        pass 
+    
+    local_dt = datetime.combine(date_val, time_val)
+    utc_dt = local_dt - timedelta(hours=float(offset_val))
+    jd_utc = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
+    
+    planetary_degrees = {}
+    planet_to_sign = {}
+    sign_to_planets = {sign: [] for sign in ZODIAC_SIGNS}
+    
+    swe.set_sid_mode(swe.SIDM_LAHIRI)
+    
+    for name, swe_id in PLANET_MAP.items():
+        res, _ = swe.calc_ut(jd_utc, swe_id, swe.FLG_SIDEREAL)
+        longi = res[0] % 360
+        sign_idx = int(longi // 30)
+        sign_name = ZODIAC_SIGNS[sign_idx]
+        planetary_degrees[name] = longi % 30
+        planet_to_sign[name] = sign_name
+        sign_to_planets[sign_name].append(name)
+        
+    # Calculate Ketu (180 degrees away from Rahu node)
+    rahu_res, _ = swe.calc_ut(jd_utc, swe.MEAN_NODE, swe.FLG_SIDEREAL)
+    ketu_longi = (rahu_res[0] + 180) % 360
+    ketu_sign_name = ZODIAC_SIGNS[int(ketu_longi // 30)]
+    planetary_degrees["Ketu"] = ketu_longi % 30
+    planet_to_sign["Ketu"] = ketu_sign_name
+    sign_to_planets[ketu_sign_name].append("Ketu")
+    
+    # Build Conjunctions and Lords Maps dynamically
+    influencer_sets = {}
+    for planet in CYCLE_ORDER:
+        current_sign = planet_to_sign[planet]
+        conjunctions = sign_to_planets[current_sign]
+        lords = SIGN_LORDS[current_sign]
+        
+        combined = []
+        for p in conjunctions + lords:
+            if p not in combined:
+                combined.append(p)
+        influencer_sets[planet] = combined
 
-        # Chronology Parsers
-        local_dt = datetime.combine(date_val, time_val)
-        utc_dt = local_dt - timedelta(hours=float(offset_val))
-        jd_utc = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
+    return resolved_address, planetary_degrees, planet_to_sign, influencer_sets, local_dt
 
-        planetary_degrees = {}
-        planet_to_sign = {}
-        sign_to_planets = {sign: [] for sign in ZODIAC_SIGNS}
+# --- Streamlit Presentation Layer ---
+st.set_page_config(page_title="Nadi Astrology Dashboard", layout="wide")
+st.title("🪐 Dynamic Nadi Planetary Timing Dashboard")
+st.markdown("Calculates absolute planetary positions, processes active sign conjunctions, maps sign rulers, and predicts active cycle windows.")
 
-        swe.set_sid_mode(swe.SIDM_LAHIRI)
+# Setup Two Side-by-Side Dashboard Columns
+col1, col2 = st.columns([1, 2])
 
-        for name, swe_id in PLANET_MAP.items():
-            res, _ = swe.calc_ut(jd_utc, swe_id, swe.FLG_SIDEREAL)
-            longi = res[0] % 360
-            sign_idx = int(longi // 30)
-            sign_name = ZODIAC_SIGNS[sign_idx]
-            planetary_degrees[name] = longi % 30
-            planet_to_sign[name] = sign_name
-            sign_to_planets[sign_name].append(name)
+with col1:
+    st.header("📥 Birth Metrics")
+    ui_date = st.date_input("Birth Date", datetime(2005, 7, 24).date())
+    ui_time = st.time_input("Birth Time (Local)", datetime.strptime("12:00", "%H:%M").time())
+    ui_place = st.text_input("Birth Place (City, Country)", "New Delhi, India")
+    ui_offset = st.number_input("Timezone UTC Offset (Hours)", min_value=-12.0, max_value=14.0, value=5.5, step=0.5)
+    
+    calculate_clicked = st.button("Calculate Profiles & Timelines", type="primary")
 
-        # Add Ketu
-        rahu_res, _ = swe.calc_ut(jd_utc, swe.MEAN_NODE, swe.FLG_SIDEREAL)
-        ketu_longi = (rahu_res[0] + 180) % 360
-        ketu_sign_name = ZODIAC_SIGNS[int(ketu_longi // 30)]
-        planetary_degrees["Ketu"] = ketu_longi % 30
-        planet_to_sign["Ketu"] = ketu_sign_name
-        sign_to_planets[ketu_sign_name].append("Ketu")
-
-        # Build Influencer Sets (Conjunctions + Sign Lords)
-        influencer_sets = {}
-        for planet in CYCLE_ORDER:
-            current_sign = planet_to_sign[planet]
-            conjunctions = sign_to_planets[current_sign]
-            lords = SIGN_LORDS[current_sign]
-
-            combined = []
-            for p in conjunctions + lords:
-                if p not in combined:
-                    combined.append(p)
-            influencer_sets[planet] = combined
-
-        # Generate HTML Dashboard Output Structure
-        html_output = f"""
-        <div style="font-family: sans-serif; padding: 15px; border: 1px solid #ddd; border-radius:8px; background:#fafafa; margin-top:15px;">
-            <div style="background: #2980b9; color: white; padding: 10px; font-weight: bold; border-radius: 4px; margin-bottom:15px;">
-                📍 Map Location: {resolved_address}
-            </div>
-
-            <h3 style="color:#2c3e50; margin-bottom:5px;">1. Sign Alignments & Dynamic Influencer Maps</h3>
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 25px; background:white; font-size:14px;">
-                <thead>
-                    <tr style="background:#f2f2f2; border-bottom:2px solid #ddd; text-align:left;">
-                        <th style="padding:8px;">Planet</th>
-                        <th style="padding:8px;">Zodiac Sign</th>
-                        <th style="padding:8px;">Degree inside Sign</th>
-                        <th style="padding:8px;">Dynamic Set (Conjunctions + Lords)</th>
-                    </tr>
-                </thead>
-                <tbody>
-        """
-        for p in CYCLE_ORDER:
-            html_output += f"""
-                <tr style="border-bottom: 1px solid #eee;">
-                    <td style="padding:8px; font-weight:bold;">{p}</td>
-                    <td style="padding:8px;">{planet_to_sign[p]}</td>
-                    <td style="padding:8px; font-family:monospace;">{planetary_degrees[p]:.4f}°</td>
-                    <td style="padding:8px; color:#27ae60; font-weight:600;">{", ".join(influencer_sets[p])}</td>
-                </tr>
-            """
-        html_output += "</tbody></table>"
-
-        # Life Cycles Calculations
-        for cycle_num, cycle_offset in [(1, 0), (2, 50)]:
-            html_output += f"""
-            <div style="background:#2c3e50; color:white; padding:8px; font-weight:bold; margin-top:20px; border-radius:4px;">
-                ⏳ LIFE CYCLE {cycle_num} (Ages {1 + cycle_offset} - {50 + cycle_offset})
-            </div>
-            """
-            for primary_planet in CYCLE_ORDER:
-                timing_range = PLANETARY_TIMING_YEARS[primary_planet]
-                p_start = timing_range[0] + cycle_offset
-                p_end = timing_range[1] + cycle_offset
-
-                html_output += f"""
-                <div style="margin: 10px 0; border: 1px solid #e0e0e0; border-radius: 4px; background: white; padding: 10px;">
-                    <strong style="color:#d35400;">🔸 {primary_planet} Period</strong> (Age {p_start}-{p_end}) — <span style="color:#7f8c8d; font-size:12px;">Sign: {planet_to_sign[primary_planet]}</span>
-                    <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:5px; text-align:left;">
-                        <tr style="color:#7f8c8d; border-bottom:1px solid #eee;">
-                            <th style="padding:4px;">Influencer Trigger</th>
-                            <th style="padding:4px;">Sign Position</th>
-                            <th style="padding:4px;">Degree Used</th>
-                            <th style="padding:4px; color:#c0392b;">Event Calculation Window</th>
-                        </tr>
-                """
-                for influencer in influencer_sets[primary_planet]:
-                    deg = planetary_degrees[influencer]
-                    period_length = (timing_range[1] - timing_range[0]) + 1
-                    degree_influence_years = (deg / 30.0) * period_length
-                    total_years_from_birth = (p_start - 1) + degree_influence_years
-                    event_date = local_dt + timedelta(days=total_years_from_birth * 365.25)
-
-                    html_output += f"""
-                        <tr style="border-bottom:1px solid #f9f9f9;">
-                            <td style="padding:4px; font-weight:600;">{influencer}</td>
-                            <td style="padding:4px;">{planet_to_sign[influencer]}</td>
-                            <td style="padding:4px; font-family:monospace;">{deg:.3f}°</td>
-                            <td style="padding:4px; font-weight:bold; color:#d35400;">{event_date.strftime('%Y-%m-%d')}</td>
-                        </tr>
-                    """
-                html_output += "</table></div>"
-
-        html_output += "</div>"
-        return html_output
-    except Exception as e:
-        return f"<div style='color:red; font-weight:bold;'>Error executing: {str(e)}</div>"
-
-# --- Create Native Widget Layout Elements ---
-ui_date = widgets.DatePicker(description='Birth Date:', value=datetime(2026, 6, 12).date())
-ui_hour = widgets.IntText(description='Hour (0-23):', value=19, min=0, max=23)
-ui_minute = widgets.IntText(description='Minute (0-59):', value=48, min=0, max=59)
-ui_place = widgets.Text(description='Birth Place:', value='noida, India')
-ui_offset = widgets.FloatText(description='UTC Offset:', value=5.5)
-ui_button = widgets.Button(description='Calculate Map & Cycles', button_style='primary')
-ui_output = widgets.Output()
-
-def on_click_action(b):
-    with ui_output:
-        ui_output.clear_output()
-        print("⚡ Processing Swiss Ephemeris data...")
-        # Construct time_val from ui_hour and ui_minute
-        time_val = time(hour=ui_hour.value, minute=ui_minute.value)
-        result_html = execute_calculation(ui_date.value, time_val, ui_place.value, ui_offset.value)
-        ui_output.clear_output()
-        display(HTML(result_html))
-
-ui_button.on_click(on_click_action)
-
-# --- Display Interactive UI Inside Notebook Cell Output ---
-display(widgets.VBox([
-    widgets.HTML("<h2>🪐 Interactive Nadi Astrology Profile Engine</h2>"),
-    widgets.HBox([ui_date, ui_hour, ui_minute]),
-    widgets.HBox([ui_place, ui_offset]),
-    widgets.Label(""),
-    ui_button,
-    ui_output
-]))
+with col2:
+    st.header("📊 Computational Timelines")
+    
+    if calculate_clicked:
+        with st.spinner("Accessing Swiss Ephemeris Engine..."):
+            address, degrees, sign_map, influencer_sets, local_dt = execute_calculation(
+                ui_date, ui_time, ui_place, ui_offset
+            )
+            
+            st.success(f"📍 Map Anchor Confirmed: {address}")
+            
+            # Section 1: Positions Table Display
+            st.subheader("1. Sign Alignments & Dynamic Influencer Maps")
+            positions_data = []
+            for p in CYCLE_ORDER:
+                positions_data.append({
+                    "Planet": p,
+                    "Zodiac Sign": sign_map[p],
+                    "Degree inside Sign": f"{degrees[p]:.4f}°",
+                    "Dynamic Set (Conjunctions + Lords)": ", ".join(influencer_sets[p])
+                })
+            st.table(positions_data)
+            
+            # Section 2: Interactive Tabs for the 50-year Life Cycles
+            st.subheader("2. Life Cycle Predictive Chronology")
+            tab1, tab2 = st.tabs(["Life Cycle 1 (Ages 1-50)", "Life Cycle 2 (Ages 51-100)"])
+            
+            for idx, cycle_offset in enumerate([0, 50]):
+                current_tab = tab1 if idx == 0 else tab2
+                with current_tab:
+                    for primary_planet in CYCLE_ORDER:
+                        timing_range = PLANETARY_TIMING_YEARS[primary_planet]
+                        p_start = timing_range[0] + cycle_offset
+                        p_end = timing_range[1] + cycle_offset
+                        
+                        expander_title = f"🔸 {primary_planet} Period (Age {p_start}-{p_end}) — Sign: {sign_map[primary_planet]}"
+                        with st.expander(expander_title):
+                            events_table = []
+                            for influencer in influencer_sets[primary_planet]:
+                                deg = degrees[influencer]
+                                period_length = (timing_range[1] - timing_range[0]) + 1
+                                degree_influence_years = (deg / 30.0) * period_length
+                                total_years_from_birth = (p_start - 1) + degree_influence_years
+                                event_date = local_dt + timedelta(days=total_years_from_birth * 365.25)
+                                
+                                events_table.append({
+                                    "Influencer Trigger": influencer,
+                                    "Sign Position": sign_map[influencer],
+                                    "Degree Used": f"{deg:.3f}°",
+                                    "Calculated Trigger Date": event_date.strftime('%Y-%m-%d')
+                                })
+                            st.dataframe(events_table, use_container_width=True)
