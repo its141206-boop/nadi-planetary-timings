@@ -1,5 +1,5 @@
 # 1. Install dependencies completely silently
-!pip install -q pyswisseph geopy
+#!pip install -q pyswisseph geopy
 
 import swisseph as swe
 from datetime import datetime, timedelta, time
